@@ -67,12 +67,12 @@ STAMP_PATTERN = re.compile(
 
 
 def cents(value):
-    """EUR -> ganze Cent; halbe Cent werden vom Nullpunkt weg gerundet."""
+    """EUR -> whole cents; half cents are rounded away from zero."""
     return int((Decimal(str(value))*100).quantize(Decimal('1'), rounding=ROUND_HALF_UP))
 
 
 def settlement(quantity, price):
-    # Erst den gesamten Ausführungswert runden, niemals den Stückpreis.
+    # Round the total fill value once, never the unit price.
     return cents(Decimal(quantity)*Decimal(str(price)))
 
 
@@ -85,9 +85,9 @@ class Config:
     capital: float = 100.0
     risk: float = 2.0
     daily_loss: float = 5.0
-    fee: float = 1.0  # pro Ausführung, nur Annahme, kein Brokerpreis
-    spread: float = 0.04  # gesamter Produktspread in EUR
-    slippage: float = 0.01  # ungünstige Abweichung je Stück und Ausführung
+    fee: float = 1.0  # per fill, assumption only, not a broker price
+    spread: float = 0.04  # total product spread in EUR
+    slippage: float = 0.01  # adverse deviation per unit and fill
     max_spread_pct: float = 0.01
     leverage: float = 5.0
     ratio: float = 0.01
@@ -129,7 +129,7 @@ class Position:
     planned_risk: float
 
 class RiskGate:
-    """Einzige Instanz, die neue simulierte Positionen zulassen kann."""
+    """The only component that may approve new simulated positions."""
     @staticmethod
     def approve(c, cash, day_pnl, count, bar, side):
         if side not in (-1, 1):
@@ -154,7 +154,7 @@ class RiskGate:
                      bar.open-side*distance, bar.open+side*distance*2,
                      bar.timestamp, 0.0)
         stop_bid = bid_at(p, p.stop, c)
-        # Konservative Obergrenze: jede Rundung kann einen halben Cent kosten.
+        # Conservative upper bound: every rounding step can cost half a cent.
         loss = Decimal(str(ask))-Decimal(str(stop_bid))
         quantity = min(int(Decimal(max(0, cash_cent-2*fee)+1)/100/Decimal(str(ask)))+1,
                        int(Decimal(max(0, budget-2*fee)+1)/100/loss)+1)
@@ -181,7 +181,7 @@ def bid_at(position, underlying, c):
                - c.spread/2 - c.slippage)
 
 def exit_price(p, b, c, emergency=False):
-    """(Produkt-Bid, Grund, Zeit); None wenn weiterhin offen."""
+    """(product bid, reason, time); None while the position stays open."""
     if p.side*(b.open-p.barrier) <= 0:
         return 0.0, 'KO_GAP', b.timestamp
     if emergency:
@@ -214,7 +214,7 @@ def session_spec(session):
 
 
 def validate_bars(bars, session='standard'):
-    """Keine Reparatur, Sortierung, Deduplizierung oder Ergänzung von Daten."""
+    """No repairing, sorting, deduplicating or filling in of data."""
     session_start, bar_count = session_spec(session)
     if not bars:
         raise ValueError('No price data.')
@@ -226,7 +226,7 @@ def validate_bars(bars, session='standard'):
             raise ValueError(f'Bar {number}: timestamp needs a UTC offset.')
         instant = t.astimezone(timezone.utc)
         local = instant.astimezone(TZ)
-        # Auch direkte Python-Aufrufe dürfen RiskGate keine UTC-Wanduhr geben.
+        # Direct Python callers must not hand RiskGate a UTC wall clock either.
         if (t.replace(tzinfo=None) != local.replace(tzinfo=None)
                 or t.utcoffset() != local.utcoffset()):
             raise ValueError(f'Bar {number}: Berlin session time required; '
@@ -255,7 +255,7 @@ def validate_bars(bars, session='standard'):
 
 
 def read_csv(path, session='standard'):
-    """Strenger UTF-8-Import; liefert ausschließlich vollständig geprüfte Balken."""
+    """Strict UTF-8 import; returns fully validated bars only."""
     bars = []
     with path.open(encoding='utf-8-sig', newline='') as f:
         reader = csv.reader(f, strict=True)
@@ -275,7 +275,7 @@ def read_csv(path, session='standard'):
                         raise ValueError('Timestamp without UTC offset.')
                     if any(not PRICE_PATTERN.fullmatch(v.strip()) for v in row[1:]):
                         raise ValueError('Prices must be decimal numbers with a dot.')
-                    # Der Offset definiert den Zeitpunkt; keine lokale Zeitzone erraten.
+                    # The offset defines the instant; never guess a local time zone.
                     bars.append(Bar(stamp.astimezone(TZ), *(float(v) for v in row[1:])))
                 except (ValueError, OverflowError) as exc:
                     raise ValueError(f'CSV line {line}: {exc}') from exc
@@ -366,7 +366,7 @@ def simulate(bars, c, out, source, stop_file, session='standard', selection=None
             log(b.timestamp, 'SIGNAL', **signal_row)
             if position:
                 result = exit_price(position, b, c, emergency)
-                # Tagesverlust auf Basis des aktuellen Liquidationswertes.
+                # Daily loss based on the current liquidation value.
                 equity = cash+settlement(position.quantity, bid_at(position, b.close, c))-fee
                 if result is None and equity-start_cash <= -cents(c.daily_loss):
                     result = (bid_at(position, b.close, c), 'DAILY_LOSS_LIMIT',
@@ -433,7 +433,7 @@ def simulate(bars, c, out, source, stop_file, session='standard', selection=None
     (out/'report.json').write_text(json.dumps(report, indent=2, ensure_ascii=False, default=str), encoding='utf-8')
     trade_fields = ['opened','closed','side','quantity','ask','bid','fees','net','reason','planned_risk','model_warning','run_label']
     if not trades and session == 'diagnose_0905':
-        # Auch eine leere Trade-Tabelle trägt die Kennzeichnung, ohne Scheindatensatz.
+        # An empty trade table carries the label too, without a fake row.
         trade_fields.append('Report label: '+run_label)
     write_csv(out/'trades.csv', [dict(t, model_warning=PRODUCT_WARNING, run_label=run_label) for t in trades],
               trade_fields)
@@ -515,7 +515,7 @@ class Tests(unittest.TestCase):
                                      cents(payload['cash']))
     def test_reserve_exit_fee_for_knockout(self):
         c = Config(fee=0.1)
-        # Ein Stück wäre mit nur einer reservierten Gebühr finanzierbar.
+        # One unit would be affordable if only one fee were reserved.
         p, _ = RiskGate.approve(c, 40.15, 0, 0, self.b, 1)
         self.assertIsNone(p)
         p, _ = RiskGate.approve(c, 40.25, 0, 0, self.b, 1)
@@ -564,7 +564,7 @@ class Tests(unittest.TestCase):
             root = Path(tmp)
             with patch(__name__+'.signal', return_value=1):
                 r = simulate(bars,Config(fee=0.1),root/'run','TEST',root/'STOP')
-            self.assertEqual(r['trades'], 2)  # Zeitlimit, danach Gap-Verlust
+            self.assertEqual(r['trades'], 2)  # time limit, then gap loss
             self.assertLess(r['net_pnl'], -5)
             self.assertGreater(r['rejected_signals']['DAILY_LOSS_LIMIT'], 0)
             self.assertIsNone(r['open_position'])
@@ -595,7 +595,7 @@ class Tests(unittest.TestCase):
         for field in ('capital', 'risk', 'daily_loss', 'fee'):
             with self.assertRaises(ValueError):
                 Config(**{field: 1.005}).validate()
-        # Tatsächlich gebuchte Stopverluste und Finanzierung an Cent-Grenzen.
+        # Actually booked stop losses and funding at cent boundaries.
         c = Config(fee=0.1)
         for price in (19794, 20000.12345, 19999.98765):
             b = Bar(self.b.timestamp,price,price+1,price-1,price)
@@ -609,13 +609,13 @@ class Tests(unittest.TestCase):
                     self.assertLessEqual(settlement(p.quantity,p.ask)+20,10000)
 
     def test_daily_forced_exit_lock_and_next_day_reset(self):
-        # Reale Exitlogik: erst Gap -4,44 EUR, dann Cent-Grenze am Schluss.
+        # Real exit logic: first a -4.44 EUR gap, then the cent boundary at the close.
         bars = demo(2)
         for i,b in enumerate(bars):
             price = 20000 if i < 5 else 19794
             bars[i] = Bar(b.timestamp,price,price+0.01,price-0.01,price)
         b = bars[6]
-        close = 19764.31  # knapp oberhalb Stop 19764,309
+        close = 19764.31  # just above the stop at 19764.309
         bars[6] = Bar(b.timestamp,19794,19794.01,close,close)
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -635,9 +635,9 @@ class Tests(unittest.TestCase):
             self.assertTrue(rejects)
             self.assertTrue(all(t.startswith(first_day) for t,p in rejects))
             second_opens = [(t,p) for t,p in opens if not t.startswith(first_day)]
-            self.assertEqual(len(second_opens),3)  # Tradezähler ebenfalls zurückgesetzt
+            self.assertEqual(len(second_opens),3)  # trade counter reset as well
             self.assertEqual(second_opens[0][0],str(bars[106].timestamp))
-            self.assertEqual(second_opens[0][1]['quantity'],2)  # volles Risikobudget
+            self.assertEqual(second_opens[0][1]['quantity'],2)  # full risk budget
             with (root/'run'/'daily_reports.csv').open() as f:
                 daily = list(csv.DictReader(f))
             self.assertEqual(cents(daily[0]['net']),-500)
@@ -658,7 +658,7 @@ class Tests(unittest.TestCase):
                 nonlocal calls
                 calls += 1
                 if calls == 5:
-                    stop.touch()  # nach Prüfung dieses Balkens, vor nächster Eröffnung
+                    stop.touch()  # after this bar is checked, before the next open
                 return 1
             with patch(__name__+'.signal', side_effect=activate_stop):
                 r = simulate(bars,Config(fee=0.1),root/'run','TEST',stop)
@@ -720,7 +720,7 @@ class Tests(unittest.TestCase):
             return read_csv(path)
 
     def test_csv_valid_offsets_and_dst_transitions(self):
-        # Freitage und Montage vor/nach beiden Zeitumstellungen 2026.
+        # Fridays and Mondays before/after both 2026 DST changes.
         for day,offset in [('2026-01-05',1),('2026-03-27',1),('2026-03-30',2),
                            ('2026-07-06',2),('2026-10-23',2),('2026-10-26',1)]:
             for utc in (False,True):
@@ -737,7 +737,7 @@ class Tests(unittest.TestCase):
                     self.assertEqual(bars[0].timestamp.utcoffset(),timedelta(hours=offset))
                     self.assertEqual(bars[0].open,20000.125)
         rows = self.csv_session('2026-03-27')+self.csv_session('2026-03-30')
-        self.assertEqual(len(self.import_rows(rows)),204)  # Wochenende nicht ergänzen
+        self.assertEqual(len(self.import_rows(rows)),204)  # do not fill in the weekend
 
     def test_csv_invalid_timestamps(self):
         for stamp in ('2026-01-05T09:00:00','2026-01-05','not-a-date',
@@ -755,7 +755,7 @@ class Tests(unittest.TestCase):
         for row in rows:
             row[0] = row[0].replace('+02:00','+01:00')
         with self.assertRaises(ValueError):
-            self.import_rows(rows)  # ergibt 10:00-18:25 Berliner Zeit
+            self.import_rows(rows)  # yields 10:00-18:25 Berlin time
         for day in ('2026-03-29','2026-10-25','2026-01-10'):
             with self.subTest(day=day), self.assertRaises(ValueError):
                 self.import_rows(self.csv_session(day))
@@ -766,7 +766,7 @@ class Tests(unittest.TestCase):
                  base[:20]+[base[20]]+base[20:],list(reversed(base))]
         mixed = [list(row) for row in base]
         mixed[1][0] = datetime.fromisoformat(base[0][0]).astimezone(timezone.utc).isoformat()
-        cases.append(mixed)  # derselbe Zeitpunkt, andere Offset-Schreibweise
+        cases.append(mixed)  # same instant, different offset notation
         swapped = [list(row) for row in base]
         swapped[20],swapped[21] = swapped[21],swapped[20]
         cases.append(swapped)
@@ -834,7 +834,7 @@ class Tests(unittest.TestCase):
             root = Path(tmp)
             with patch(__name__+'.signal',return_value=1):
                 r = simulate(demo(1),Config(fee=0.1),root/'run',
-                             'Historische Indexkurse (TEST, künstliche Daten)',root/'STOP')
+                             'Historical index prices (TEST, artificial data)',root/'STOP')
             self.assertIn(PRODUCT_WARNING,r['limitations'])
             self.assertIn(PRODUCT_WARNING,(root/'run'/'report.txt').read_text())
             self.assertIn(PRODUCT_WARNING,(root/'run'/'report.json').read_text())
@@ -885,7 +885,7 @@ class Tests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp)
             with patch(__name__+'.signal',side_effect=inspect):
-                r=simulate(bars,Config(),root/'run','KÜNSTLICHE TESTDATEN',root/'STOP',session='diagnose_0905')
+                r=simulate(bars,Config(),root/'run','ARTIFICIAL TEST DATA',root/'STOP',session='diagnose_0905')
             with (root/'run'/'signals.csv').open() as f:
                 rows=list(csv.DictReader(f))
             self.assertEqual(len(seen),202)
@@ -906,20 +906,20 @@ class Tests(unittest.TestCase):
 
     def test_diagnostic_position_closes_without_overnight(self):
         bars=[Bar(b.timestamp,20000,20000.01,19999.99,20000) for b in self.diagnostic_bars(2)]
-        # Nur Testgebühren 0,10; realer Diagnoseläufer hat ausschließlich Config().
+        # Test fees of 0.10 only; the real diagnosis run uses plain Config().
         def one_signal(history):
-            return 1 if len(history)==88 else 0  # Einstieg 16:25
+            return 1 if len(history)==88 else 0  # entry at 16:25
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp)
             with patch(__name__+'.signal',side_effect=one_signal):
-                r=simulate(bars,Config(fee=0.1),root/'run','KÜNSTLICHE TESTDATEN',root/'STOP',session='diagnose_0905')
+                r=simulate(bars,Config(fee=0.1),root/'run','ARTIFICIAL TEST DATA',root/'STOP',session='diagnose_0905')
             with (root/'run'/'trades.csv').open() as f:rows=list(csv.DictReader(f))
             self.assertEqual(len(rows),2)
             self.assertTrue(all(t['reason']=='TIME_LIMIT' and t['closed'][11:16]=='17:25' for t in rows))
             self.assertIsNone(r['open_position'])
             self.assertEqual(r['fees'],0.4)
             self.assertEqual(r['final_equity'],99.36)
-        # Zusätzliche direkte Absicherung des letzten Balkens für beide Richtungen.
+        # Extra direct check of the last bar for both directions.
         c=Config(fee=0.1)
         for side in (1,-1):
             p,_=RiskGate.approve(c,100,0,0,self.b,side)

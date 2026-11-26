@@ -98,10 +98,11 @@ day-selection logic.
 
 ## Language
 
-CLI help, terminal output, error messages, output file names and all status,
-reason and signal codes are in English (for example `COMPLETED`,
-`TIME_LIMIT`, `COSTS_EXCEED_RISK_BUDGET`). Most code comments are still
-German. Translations and pull requests are welcome.
+Everything is in English: CLI help, terminal output, error messages, output
+file names, code comments and all status, reason and signal codes (for
+example `COMPLETED`, `TIME_LIMIT`, `COSTS_EXCEED_RISK_BUDGET`). Only the
+default input folder of the optional diagnosis mode (`historische_daten/`)
+keeps its original name.
 
 Exit reasons in `trades.csv`: `STOP`, `TARGET`, `TIME_LIMIT`, `END_OF_DAY`,
 `DAILY_LOSS_LIMIT`, `KILL_SWITCH`, `KO_GAP`, `STOP_GAP`, `TARGET_GAP`,

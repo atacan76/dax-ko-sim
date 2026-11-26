@@ -25,10 +25,10 @@ def load_provider(path):
     with path.open(encoding='utf-8-sig',newline='') as f:
         reader = csv.reader(f,strict=True)
         if next(reader,None) != CSV_FIELDS:
-            raise ValueError('Unerwartete Anbieter-Kopfzeile: '+str(path))
+            raise ValueError('Unexpected provider header: '+str(path))
         for number,row in enumerate(reader,2):
             if len(row)!=5:
-                raise ValueError(f'{path}:{number}: fünf Felder erforderlich.')
+                raise ValueError(f'{path}:{number}: five fields required.')
             naive = datetime.strptime(row[0],'%Y-%m-%d %H:%M:%S')
             candidates = set()
             for fold in (0,1):
@@ -36,29 +36,29 @@ def load_provider(path):
                 if instant.astimezone(EASTERN).replace(tzinfo=None)==naive:
                     candidates.add(instant)
             if len(candidates)!=1:
-                raise ValueError('Mehrdeutige/nicht existente Quellzeit: '+row[0])
+                raise ValueError('Ambiguous/non-existent source time: '+row[0])
             stamp = candidates.pop().astimezone(BERLIN)
             if previous is not None and stamp<=previous:
-                raise ValueError(f'{path}:{number}: Duplikat/Reihenfolgefehler.')
+                raise ValueError(f'{path}:{number}: duplicate/order error.')
             previous = stamp
             try:
                 values = tuple(Decimal(v) for v in row[1:])
             except InvalidOperation:
-                raise ValueError(f'{path}:{number}: ungültiger Preis.') from None
+                raise ValueError(f'{path}:{number}: invalid price.') from None
             if any(not v.is_finite() or v<=0 for v in values):
-                raise ValueError(f'{path}:{number}: ungültiger Preis.')
+                raise ValueError(f'{path}:{number}: invalid price.')
             op,hi,lo,cl = values
             if not lo<=min(op,cl)<=max(op,cl)<=hi:
-                raise ValueError(f'{path}:{number}: OHLC verletzt.')
+                raise ValueError(f'{path}:{number}: OHLC violated.')
             rows.append((stamp,row[1:],values,number))
-    if not rows:raise ValueError('Leere Anbieterdatei: '+str(path))
+    if not rows:raise ValueError('Empty provider file: '+str(path))
     return rows
 
 
 def select_days(five, one):
     groups = defaultdict(list)
     for row in five:groups[row[0].date()].append(row)
-    for row in one:groups[row[0].date()]  # auch einseitig vorhandene Tage prüfen
+    for row in one:groups[row[0].date()]  # also check days present in only one file
     minute_map = {r[0]:r for r in one}
     records=[];selected=[]
     for day,rows in sorted(groups.items()):
@@ -78,12 +78,12 @@ def select_days(five, one):
                 mismatches.append(stamp.isoformat())
         reasons=[]
         if day.weekday()>=5:reasons.append('WEEKEND')
-        if actual!=expected_five:reasons.append('5MIN_RASTER_UNVOLLSTAENDIG_ODER_ABWEICHEND')
+        if actual!=expected_five:reasons.append('5MIN_GRID_INCOMPLETE_OR_DEVIATING')
         if missing_one:reasons.append('MINUTE_COVERAGE_INCOMPLETE')
         if mismatches:reasons.append('AGGREGATION_MISMATCH')
         use = not reasons
         if use:selected.extend(included)
-        records.append(dict(day=str(day),used=use,reason='VERWENDET: Raster und Minutenaggregation bestätigt' if use else '; '.join(reasons),
+        records.append(dict(day=str(day),used=use,reason='USED: grid and minute aggregation confirmed' if use else '; '.join(reasons),
                             raw_5min_rows=len(rows),selected_5min_rows=len(included) if use else 0,
                             candidate_5min_rows=len(included),missing_minutes=len(missing_one),
                             missing_minute_labels=[t.isoformat() for t in missing_one],
@@ -113,17 +113,17 @@ def prepare_probe(probe, out):
         writer=csv.writer(f);writer.writerow(CSV_FIELDS)
         for stamp,original_prices,values,line in selected:
             writer.writerow([stamp.isoformat()]+original_prices)
-    # Echter Import mit separater Sitzungsvalidierung, kein Monkeypatch.
+    # Real import with separate session validation, no monkeypatching.
     bars = read_csv(path,session=SESSION)
     selection = dict(run_label=LABEL,used_days=[r['day'] for r in records if r['used']],
                      excluded_days=[dict(day=r['day'],reason=r['reason']) for r in records if not r['used']],
                      days=records,selected_rows=len(selected),source_5min_rows=len(five),
                      excluded_source_rows=sum(len(r['excluded_source_rows']) for r in records),
-                     scope='Nur Tage in der Anbieterprobe; kein vollständiger Börsenkalender.',
-                     limitation='Interne Minutenabdeckung/OHLC bestätigt; keine unabhängige Sekundentickreferenz, Indexvariante/ISIN nicht bestätigt.',
-                     transformations=['US Eastern (America/New_York) nach Europe/Berlin mit ISO-Offset',
-                                      'Nur bestätigte Tage und Balkenanfänge 09:05–17:25',
-                                      'Originale OHLC-Textfelder byteinhaltlich übernommen; keine Rundung/Aggregation/Füllung'],
+                     scope='Only days in the provider sample; not a complete exchange calendar.',
+                     limitation='Internal minute coverage/OHLC confirmed; no independent second-tick reference, index variant/ISIN not confirmed.',
+                     transformations=['US Eastern (America/New_York) to Europe/Berlin with ISO offset',
+                                      'Only confirmed days and bar starts 09:05-17:25',
+                                      'Original OHLC text fields copied byte for byte; no rounding/aggregation/filling'],
                      original_file_hashes=manifest['files'],
                      converted_csv_sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
                      product_warning=PRODUCT_WARNING)
