@@ -19,8 +19,9 @@ no accounts.
 - Simulates artificial long/short KO products with a fixed barrier
   (ratio 0.01, leverage ≈ 5), including spread and slippage.
 - Books all money in whole euro cents (`Decimal`, `ROUND_HALF_UP` per fill).
-- Writes a SQLite event journal, `Trades.csv`, `Tagesberichte.csv` (daily
-  reports), `Bericht.json` and `Bericht.txt` for every run.
+- Writes `config.json`, a SQLite event journal (`journal.sqlite`),
+  `trades.csv`, `daily_reports.csv`, `signals.csv`, `report.json` and
+  `report.txt` for every run.
 
 ## Quick start
 
@@ -90,19 +91,21 @@ realistic derivative prices — this warning is written into every report.
 
 ## Historical diagnosis mode (optional)
 
-`historische_diagnose.py` runs a shortened 09:05–17:30 diagnosis on a local
+`historical_diagnosis.py` runs a shortened 09:05–17:30 diagnosis on a local
 FirstRate Data sample. That data is licensed and **not included**; without it
 the script will not run. It is kept here because the self-test covers its
 day-selection logic.
 
 ## Language
 
-The CLI help, terminal output and error messages are in English. Status and
-reason codes inside `Bericht.json`, the CSV files and the journal are still
-German identifiers (for example `ABGESCHLOSSEN`, `ZEITLIMIT`); the terminal
-summary shows English labels for them (`COMPLETED`, `MAX_TRADES_PER_DAY`, …).
-Output file names and most code comments are also still German.
-Translations and pull requests are welcome.
+CLI help, terminal output, error messages, output file names and all status,
+reason and signal codes are in English (for example `COMPLETED`,
+`TIME_LIMIT`, `COSTS_EXCEED_RISK_BUDGET`). Most code comments are still
+German. Translations and pull requests are welcome.
+
+Exit reasons in `trades.csv`: `STOP`, `TARGET`, `TIME_LIMIT`, `END_OF_DAY`,
+`DAILY_LOSS_LIMIT`, `KILL_SWITCH`, `KO_GAP`, `STOP_GAP`, `TARGET_GAP`,
+`KO_INTRABAR_CONSERVATIVE`.
 
 ## License
 

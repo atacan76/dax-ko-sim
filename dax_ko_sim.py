@@ -31,8 +31,8 @@ Demo results are NOT proof of profitability.
 With default costs of 1 EUR per order, a 2 EUR stop budget including
 both fees is not workable: consistently no entries.
 
-Outputs per run: configuration, SQLite event journal, Trades.csv,
-Tagesberichte.csv (daily reports), Bericht.json and Bericht.txt (report).
+Outputs per run: configuration, SQLite event journal, trades.csv,
+daily_reports.csv, report.json and report.txt.
 Ctrl+C ends the run with status incomplete; an open simulated position
 is not claimed to be closed. A file named STOP in the current directory
 blocks new entries and closes an open position at the next simulated open.
@@ -61,15 +61,6 @@ CSV_FIELDS = ['timestamp', 'open', 'high', 'low', 'close']
 PRICE_PATTERN = re.compile(r'[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?')
 PRODUCT_WARNING = ('Historical index prices do not turn the artificial KO product prices '
                    'into realistic derivative prices.')
-# English labels for the terminal summary only; JSON, CSV and journal keep the codes.
-DISPLAY_CODES = {
-    'ABGESCHLOSSEN': 'COMPLETED', 'UNVOLLSTAENDIG': 'INCOMPLETE',
-    'KEIN_SIGNAL': 'NO_SIGNAL', 'NICHT_AUSGEWERTET': 'NOT_EVALUATED',
-    'TAGESLIMIT': 'DAILY_LOSS_LIMIT', 'TRADELIMIT': 'MAX_TRADES_PER_DAY',
-    'ZEITFENSTER': 'OUTSIDE_ENTRY_WINDOW', 'SPREAD': 'SPREAD_TOO_WIDE',
-    'KOSTEN_UEBER_RISIKOBUDGET': 'COSTS_EXCEED_RISK_BUDGET',
-    'KEINE_FINANZIERBARE_STUECKZAHL': 'NO_AFFORDABLE_QUANTITY',
-}
 STAMP_PATTERN = re.compile(
     r'\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?'
     r'(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)')
@@ -142,23 +133,23 @@ class RiskGate:
     @staticmethod
     def approve(c, cash, day_pnl, count, bar, side):
         if side not in (-1, 1):
-            return None, 'KEIN_SIGNAL'
+            return None, 'NO_SIGNAL'
         if cents(day_pnl) <= -cents(c.daily_loss):
-            return None, 'TAGESLIMIT'
+            return None, 'DAILY_LOSS_LIMIT'
         if count >= c.max_trades:
-            return None, 'TRADELIMIT'
+            return None, 'MAX_TRADES_PER_DAY'
         if not time(9, 20) <= bar.timestamp.time() < time(16, 30):
-            return None, 'ZEITFENSTER'
+            return None, 'OUTSIDE_ENTRY_WINDOW'
         barrier = bar.open * (1 - side/c.leverage)
         mid = abs(bar.open - barrier) * c.ratio
         if c.spread / mid > c.max_spread_pct:
-            return None, 'SPREAD'
+            return None, 'SPREAD_TOO_WIDE'
         distance = bar.open * c.stop_fraction
         ask = mid + c.spread/2 + c.slippage
         cash_cent, fee = cents(cash), cents(c.fee)
         budget = min(cents(c.risk), max(0, cents(c.daily_loss)+cents(day_pnl)))
         if budget <= 2*fee:
-            return None, 'KOSTEN_UEBER_RISIKOBUDGET'
+            return None, 'COSTS_EXCEED_RISK_BUDGET'
         p = Position(side, barrier, 0, ask,
                      bar.open-side*distance, bar.open+side*distance*2,
                      bar.timestamp, 0.0)
@@ -172,9 +163,9 @@ class RiskGate:
             planned = purchase-settlement(quantity, stop_bid)+2*fee
             if purchase+2*fee <= cash_cent and planned <= budget:
                 p.quantity, p.planned_risk = quantity, euros(planned)
-                return p, 'FREIGABE'
+                return p, 'APPROVED'
             quantity -= 1
-        return None, 'KEINE_FINANZIERBARE_STUECKZAHL'
+        return None, 'NO_AFFORDABLE_QUANTITY'
 
 def signal(history):
     if len(history) < 20:
@@ -194,24 +185,24 @@ def exit_price(p, b, c, emergency=False):
     if p.side*(b.open-p.barrier) <= 0:
         return 0.0, 'KO_GAP', b.timestamp
     if emergency:
-        return bid_at(p, b.open, c), 'NOT_AUS', b.timestamp
+        return bid_at(p, b.open, c), 'KILL_SWITCH', b.timestamp
     if p.side*(b.open-p.stop) <= 0:
         return bid_at(p, b.open, c), 'STOP_GAP', b.timestamp
     if p.side*(b.open-p.target) >= 0:
-        return bid_at(p, b.open, c), 'ZIEL_GAP', b.timestamp
+        return bid_at(p, b.open, c), 'TARGET_GAP', b.timestamp
     if (b.timestamp-p.opened).total_seconds()/60 >= c.max_minutes:
-        return bid_at(p, b.open, c), 'ZEITLIMIT', b.timestamp
+        return bid_at(p, b.open, c), 'TIME_LIMIT', b.timestamp
     adverse = b.low if p.side == 1 else b.high
     favorable = b.high if p.side == 1 else b.low
     end = b.timestamp + timedelta(minutes=5)
     if p.side*(adverse-p.barrier) <= 0:
-        return 0.0, 'KO_INTRABAR_KONSERVATIV', end
+        return 0.0, 'KO_INTRABAR_CONSERVATIVE', end
     if p.side*(adverse-p.stop) <= 0:
         return bid_at(p, p.stop, c), 'STOP', end
     if p.side*(favorable-p.target) >= 0:
-        return bid_at(p, p.target, c), 'ZIEL', end
+        return bid_at(p, p.target, c), 'TARGET', end
     if b.timestamp.time() == time(17, 25):
-        return bid_at(p, b.close, c), 'TAGESENDE', end
+        return bid_at(p, b.close, c), 'END_OF_DAY', end
     return None
 
 def session_spec(session):
@@ -324,8 +315,8 @@ def simulate(bars, c, out, source, stop_file, session='standard', selection=None
                   else 'STANDARD OFFLINE SIMULATION')+'; '+source+'; artificial KO product prices')
     out.mkdir(parents=True, exist_ok=False)
     config_payload = dict(asdict(c), run_label=run_label, session=session)
-    (out/'Konfiguration.json').write_text(json.dumps(config_payload, indent=2, ensure_ascii=False), encoding='utf-8')
-    conn = sqlite3.connect(out/'Journal.sqlite')
+    (out/'config.json').write_text(json.dumps(config_payload, indent=2, ensure_ascii=False), encoding='utf-8')
+    conn = sqlite3.connect(out/'journal.sqlite')
     conn.execute('CREATE TABLE events(id INTEGER PRIMARY KEY, timestamp TEXT, kind TEXT, payload TEXT)')
     def log(t, kind, **payload):
         conn.execute('INSERT INTO events(timestamp,kind,payload) VALUES(?,?,?)',
@@ -353,7 +344,7 @@ def simulate(bars, c, out, source, stop_file, session='standard', selection=None
                 day, history, start_cash, count = b.timestamp.date(), [], cash, 0
             emergency = stop_file.exists() or (Path(__file__).resolve().parent/'STOP').exists()
             was_open = position is not None
-            side, reason = None, 'NOT_AUS' if emergency else 'POSITION_OFFEN'
+            side, reason = None, 'KILL_SWITCH' if emergency else 'POSITION_OPEN'
             if not was_open and not emergency:
                 side = signal(history)
                 position, reason = RiskGate.approve(c, euros(cash), euros(cash-start_cash), count, b, side)
@@ -369,7 +360,7 @@ def simulate(bars, c, out, source, stop_file, session='standard', selection=None
                     log(b.timestamp, 'REJECT', reason=reason)
             signal_row = dict(timestamp=b.timestamp.isoformat(), history_bars=len(history),
                               side=('LONG' if side == 1 else 'SHORT' if side == -1 else
-                                    'KEIN_SIGNAL' if side == 0 else 'NICHT_AUSGEWERTET'),
+                                    'NO_SIGNAL' if side == 0 else 'NOT_EVALUATED'),
                               reason=reason)
             signals.append(signal_row)
             log(b.timestamp, 'SIGNAL', **signal_row)
@@ -378,7 +369,7 @@ def simulate(bars, c, out, source, stop_file, session='standard', selection=None
                 # Tagesverlust auf Basis des aktuellen Liquidationswertes.
                 equity = cash+settlement(position.quantity, bid_at(position, b.close, c))-fee
                 if result is None and equity-start_cash <= -cents(c.daily_loss):
-                    result = (bid_at(position, b.close, c), 'TAGESLIMIT',
+                    result = (bid_at(position, b.close, c), 'DAILY_LOSS_LIMIT',
                               b.timestamp+timedelta(minutes=5))
                 if result:
                     bid, reason, closed = result
@@ -414,14 +405,14 @@ def simulate(bars, c, out, source, stop_file, session='standard', selection=None
         return euros(int((Decimal(sum(values))/len(values)).quantize(
             Decimal('1'), rounding=ROUND_HALF_UP))) if values else None
     signal_counts = {side: sum(row['side']==side for row in signals)
-                     for side in ('LONG','SHORT','KEIN_SIGNAL','NICHT_AUSGEWERTET')}
+                     for side in ('LONG','SHORT','NO_SIGNAL','NOT_EVALUATED')}
     report = dict(version=VERSION, mode='OFFLINE_SIMULATION', source=source,
                   run_label=run_label, session=session, session_start=session_start.isoformat(),
                   session_end='17:30:00', expected_bars_per_day=bar_count,
                   signal_counts=signal_counts, signal_rows=len(signals),
-                  warmup_rows=sum(row['history_bars']<20 and row['side']!='NICHT_AUSGEWERTET' for row in signals),
+                  warmup_rows=sum(row['history_bars']<20 and row['side']!='NOT_EVALUATED' for row in signals),
                   day_selection=selection, paper_trading_days_counted=0,
-                  status='UNVOLLSTAENDIG' if interrupted else 'ABGESCHLOSSEN',
+                  status='INCOMPLETE' if interrupted else 'COMPLETED',
                   real_orders_possible=False, artificial_products=True,
                   data_validation='Complete bars checked for every included day; '
                   'no check for entirely missing trading days or data origin.',
@@ -439,29 +430,27 @@ def simulate(bars, c, out, source, stop_file, session='standard', selection=None
                   open_position=asdict(position) if position else None,
                   limitations=PRODUCT_WARNING+' Artificial KO products, fixed costs, no real AI/live prices. '
                   'Drawdown at bar closes only; no statement about real profitability.')
-    (out/'Bericht.json').write_text(json.dumps(report, indent=2, ensure_ascii=False, default=str), encoding='utf-8')
+    (out/'report.json').write_text(json.dumps(report, indent=2, ensure_ascii=False, default=str), encoding='utf-8')
     trade_fields = ['opened','closed','side','quantity','ask','bid','fees','net','reason','planned_risk','model_warning','run_label']
     if not trades and session == 'diagnose_0905':
         # Auch eine leere Trade-Tabelle trägt die Kennzeichnung, ohne Scheindatensatz.
         trade_fields.append('Report label: '+run_label)
-    write_csv(out/'Trades.csv', [dict(t, model_warning=PRODUCT_WARNING, run_label=run_label) for t in trades],
+    write_csv(out/'trades.csv', [dict(t, model_warning=PRODUCT_WARNING, run_label=run_label) for t in trades],
               trade_fields)
-    write_csv(out/'Tagesberichte.csv', [dict(d, model_warning=PRODUCT_WARNING, run_label=run_label) for d in daily],
+    write_csv(out/'daily_reports.csv', [dict(d, model_warning=PRODUCT_WARNING, run_label=run_label) for d in daily],
               ['day','start','end','net','trades','model_warning','run_label'])
-    write_csv(out/'Signale.csv', [dict(row, run_label=run_label, model_warning=PRODUCT_WARNING) for row in signals],
+    write_csv(out/'signals.csv', [dict(row, run_label=run_label, model_warning=PRODUCT_WARNING) for row in signals],
               ['timestamp','history_bars','side','reason','run_label','model_warning'])
-    def shown(counts):
-        return {DISPLAY_CODES.get(k, k): v for k, v in counts.items()}
     summary = ('#dax-ko-sim — simulation only\n'
-               f"Label: {run_label}\nSignals: {shown(signal_counts)}\n"
-               f"Data: {source}\nStatus: {DISPLAY_CODES.get(report['status'], report['status'])}\n"
+               f"Label: {run_label}\nSignals: {signal_counts}\n"
+               f"Data: {source}\nStatus: {report['status']}\n"
                f"Start: {c.capital:.2f} EUR | Final equity: {report['final_equity']}\n"
                f"Cash: {report['cash_balance']:.2f} EUR | Fees paid: {report['fees']:.2f} EUR\n"
                f"Open position: {position is not None}\n"
                f"Trades: {len(trades)} | Net: {report['net_pnl']} EUR\n"
-               f"Rejections: {shown(rejections)}\nData check: {report['data_validation']}\n"
+               f"Rejections: {rejections}\nData check: {report['data_validation']}\n"
                f"{report['limitations']}\n")
-    (out/'Bericht.txt').write_text(summary, encoding='utf-8')
+    (out/'report.txt').write_text(summary, encoding='utf-8')
     print(summary)
     print(f'Reports: {out.resolve()}')
     return report
@@ -472,7 +461,7 @@ class Tests(unittest.TestCase):
     def test_cost_gate(self):
         p, reason = RiskGate.approve(Config(),100,0,0,self.b,1)
         self.assertIsNone(p)
-        self.assertEqual(reason,'KOSTEN_UEBER_RISIKOBUDGET')
+        self.assertEqual(reason,'COSTS_EXCEED_RISK_BUDGET')
     def test_sizing_and_daily_limit(self):
         c = Config(fee=0.1)
         p,_ = RiskGate.approve(c,100,0,0,self.b,1)
@@ -510,12 +499,12 @@ class Tests(unittest.TestCase):
             r = simulate(demo(2),Config(fee=0.1),root/'run','TEST',root/'STOP')
             self.assertGreater(r['trades'],0)
             self.assertIsNone(r['open_position'])
-            rows = list(csv.DictReader((root/'run'/'Trades.csv').open()))
+            rows = list(csv.DictReader((root/'run'/'trades.csv').open()))
             self.assertAlmostEqual(r['net_pnl'],sum(float(t['net']) for t in rows))
             self.assertTrue(all(t['opened'][:10]==t['closed'][:10] for t in rows))
             self.assertEqual(cents(r['net_pnl']),sum(cents(t['net']) for t in rows))
             self.assertEqual(cents(r['fees']),sum(cents(t['fees']) for t in rows))
-            with (root/'run'/'Tagesberichte.csv').open() as f:
+            with (root/'run'/'daily_reports.csv').open() as f:
                 days = list(csv.DictReader(f))
             self.assertEqual(cents(r['net_pnl']),sum(cents(d['net']) for d in days))
             for d in days:
@@ -546,11 +535,11 @@ class Tests(unittest.TestCase):
         for side in (1, -1):
             p, _ = RiskGate.approve(c, 100, 0, 0, self.b, side)
             b = Bar(self.b.timestamp+timedelta(minutes=60),20000,20001,19999,20000)
-            self.assertEqual(exit_price(p,b,c)[1], 'ZEITLIMIT')
-            self.assertEqual(exit_price(p,b,c,True)[1], 'NOT_AUS')
+            self.assertEqual(exit_price(p,b,c)[1], 'TIME_LIMIT')
+            self.assertEqual(exit_price(p,b,c,True)[1], 'KILL_SWITCH')
             p.opened = self.b.timestamp.replace(hour=17,minute=20)
             b = Bar(p.opened+timedelta(minutes=5),20000,20001,19999,20000)
-            self.assertEqual(exit_price(p,b,c)[1], 'TAGESENDE')
+            self.assertEqual(exit_price(p,b,c)[1], 'END_OF_DAY')
             self.assertEqual(exit_price(p,b,c)[2].time(), time(17,30))
 
     def test_signal_uses_only_previous_closes(self):
@@ -577,7 +566,7 @@ class Tests(unittest.TestCase):
                 r = simulate(bars,Config(fee=0.1),root/'run','TEST',root/'STOP')
             self.assertEqual(r['trades'], 2)  # Zeitlimit, danach Gap-Verlust
             self.assertLess(r['net_pnl'], -5)
-            self.assertGreater(r['rejected_signals']['TAGESLIMIT'], 0)
+            self.assertGreater(r['rejected_signals']['DAILY_LOSS_LIMIT'], 0)
             self.assertIsNone(r['open_position'])
 
     def test_interruption_includes_paid_entry_fee(self):
@@ -587,14 +576,14 @@ class Tests(unittest.TestCase):
             with patch(__name__+'.signal', return_value=1):
                 with patch(__name__+'.exit_price', side_effect=KeyboardInterrupt):
                     r = simulate(bars,Config(fee=0.1),root/'run','TEST',root/'STOP')
-            self.assertEqual(r['status'], 'UNVOLLSTAENDIG')
+            self.assertEqual(r['status'], 'INCOMPLETE')
             self.assertIsNotNone(r['open_position'])
             self.assertIsNone(r['final_equity'])
             self.assertEqual(r['fees'], 0.1)
 
     @staticmethod
     def read_events(out):
-        with sqlite3.connect(out/'Journal.sqlite') as db:
+        with sqlite3.connect(out/'journal.sqlite') as db:
             return [(stamp, kind, json.loads(payload)) for stamp, kind, payload in
                     db.execute('SELECT timestamp,kind,payload FROM events ORDER BY id')]
 
@@ -637,19 +626,19 @@ class Tests(unittest.TestCase):
             closes = [(t,p) for t,k,p in events if k=='CLOSE']
             first_day = str(bars[0].timestamp.date())
             day_closes = [(t,p) for t,p in closes if t.startswith(first_day)]
-            self.assertEqual([p['reason'] for t,p in day_closes],['STOP_GAP','TAGESLIMIT'])
+            self.assertEqual([p['reason'] for t,p in day_closes],['STOP_GAP','DAILY_LOSS_LIMIT'])
             self.assertEqual([cents(p['net']) for t,p in day_closes],[-444,-56])
             self.assertEqual(day_closes[-1][0],str(b.timestamp+timedelta(minutes=5)))
             self.assertEqual(cents(day_closes[-1][1]['cash']),9500)
             self.assertEqual(sum(t.startswith(first_day) for t,p in opens),2)
-            rejects = [(t,p) for t,k,p in events if k=='REJECT' and p['reason']=='TAGESLIMIT']
+            rejects = [(t,p) for t,k,p in events if k=='REJECT' and p['reason']=='DAILY_LOSS_LIMIT']
             self.assertTrue(rejects)
             self.assertTrue(all(t.startswith(first_day) for t,p in rejects))
             second_opens = [(t,p) for t,p in opens if not t.startswith(first_day)]
             self.assertEqual(len(second_opens),3)  # Tradezähler ebenfalls zurückgesetzt
             self.assertEqual(second_opens[0][0],str(bars[106].timestamp))
             self.assertEqual(second_opens[0][1]['quantity'],2)  # volles Risikobudget
-            with (root/'run'/'Tagesberichte.csv').open() as f:
+            with (root/'run'/'daily_reports.csv').open() as f:
                 daily = list(csv.DictReader(f))
             self.assertEqual(cents(daily[0]['net']),-500)
             self.assertEqual(cents(daily[1]['start']),9500)
@@ -677,13 +666,13 @@ class Tests(unittest.TestCase):
             closes = [(t,p) for t,k,p in events if k=='CLOSE']
             self.assertEqual(len(closes),1)
             self.assertEqual(closes[0][0],str(bars[5].timestamp))
-            self.assertEqual(closes[0][1]['reason'],'NOT_AUS')
+            self.assertEqual(closes[0][1]['reason'],'KILL_SWITCH')
             self.assertEqual(closes[0][1]['net'],-0.32)
             self.assertEqual(r['fees'],0.20)
             self.assertEqual(r['cash_balance'],99.68)
             self.assertEqual(r['final_equity'],99.68)
             self.assertIsNone(r['open_position'])
-            self.assertEqual(r['status'],'ABGESCHLOSSEN')
+            self.assertEqual(r['status'],'COMPLETED')
             self.assertEqual(sum(k=='OPEN' for t,k,p in events),1)
 
     def test_interrupted_open_position_cash_and_files(self):
@@ -700,8 +689,8 @@ class Tests(unittest.TestCase):
             self.assertEqual(r['trades'],0)
             self.assertIsNone(r['net_pnl'])
             self.assertIsNone(r['final_equity'])
-            self.assertEqual(r['status'],'UNVOLLSTAENDIG')
-            self.assertEqual(json.loads((root/'run'/'Bericht.json').read_text()),
+            self.assertEqual(r['status'],'INCOMPLETE')
+            self.assertEqual(json.loads((root/'run'/'report.json').read_text()),
                              json.loads(json.dumps(r,default=str)))
             events = self.read_events(root/'run')
             last = events[-1]
@@ -710,7 +699,7 @@ class Tests(unittest.TestCase):
             self.assertEqual(last[2]['fees'],0.10)
             self.assertIsNotNone(last[2]['open_position'])
             self.assertFalse(any(k=='CLOSE' for t,k,p in events))
-            with (root/'run'/'Tagesberichte.csv').open() as f:
+            with (root/'run'/'daily_reports.csv').open() as f:
                 day = next(csv.DictReader(f))
             self.assertEqual(day['end'],'')
             self.assertEqual(day['net'],'')
@@ -847,9 +836,9 @@ class Tests(unittest.TestCase):
                 r = simulate(demo(1),Config(fee=0.1),root/'run',
                              'Historische Indexkurse (TEST, künstliche Daten)',root/'STOP')
             self.assertIn(PRODUCT_WARNING,r['limitations'])
-            self.assertIn(PRODUCT_WARNING,(root/'run'/'Bericht.txt').read_text())
-            self.assertIn(PRODUCT_WARNING,(root/'run'/'Bericht.json').read_text())
-            for name in ('Trades.csv','Tagesberichte.csv'):
+            self.assertIn(PRODUCT_WARNING,(root/'run'/'report.txt').read_text())
+            self.assertIn(PRODUCT_WARNING,(root/'run'/'report.json').read_text())
+            for name in ('trades.csv','daily_reports.csv'):
                 with (root/'run'/name).open() as f:
                     rows = list(csv.DictReader(f))
                 self.assertTrue(rows)
@@ -897,7 +886,7 @@ class Tests(unittest.TestCase):
             root=Path(tmp)
             with patch(__name__+'.signal',side_effect=inspect):
                 r=simulate(bars,Config(),root/'run','KÜNSTLICHE TESTDATEN',root/'STOP',session='diagnose_0905')
-            with (root/'run'/'Signale.csv').open() as f:
+            with (root/'run'/'signals.csv').open() as f:
                 rows=list(csv.DictReader(f))
             self.assertEqual(len(seen),202)
             for i,history in enumerate(seen):
@@ -906,10 +895,10 @@ class Tests(unittest.TestCase):
             for offset in (0,101):
                 self.assertEqual(rows[offset+20]['timestamp'][11:16],'10:45')
                 self.assertEqual(int(rows[offset+20]['history_bars']),20)
-                self.assertTrue(all(row['side']=='KEIN_SIGNAL' for row in rows[offset:offset+20]))
+                self.assertTrue(all(row['side']=='NO_SIGNAL' for row in rows[offset:offset+20]))
             self.assertEqual(r['session'],'diagnose_0905')
             self.assertEqual(r['trades'],0)
-            with (root/'run'/'Trades.csv').open() as f:
+            with (root/'run'/'trades.csv').open() as f:
                 empty=list(csv.reader(f))
             self.assertEqual(len(empty),1)
             self.assertIn('SHORTENED HISTORICAL DIAGNOSTIC TEST',empty[0][-1])
@@ -924,9 +913,9 @@ class Tests(unittest.TestCase):
             root=Path(tmp)
             with patch(__name__+'.signal',side_effect=one_signal):
                 r=simulate(bars,Config(fee=0.1),root/'run','KÜNSTLICHE TESTDATEN',root/'STOP',session='diagnose_0905')
-            with (root/'run'/'Trades.csv').open() as f:rows=list(csv.DictReader(f))
+            with (root/'run'/'trades.csv').open() as f:rows=list(csv.DictReader(f))
             self.assertEqual(len(rows),2)
-            self.assertTrue(all(t['reason']=='ZEITLIMIT' and t['closed'][11:16]=='17:25' for t in rows))
+            self.assertTrue(all(t['reason']=='TIME_LIMIT' and t['closed'][11:16]=='17:25' for t in rows))
             self.assertIsNone(r['open_position'])
             self.assertEqual(r['fees'],0.4)
             self.assertEqual(r['final_equity'],99.36)
@@ -937,11 +926,11 @@ class Tests(unittest.TestCase):
             p.opened=self.b.timestamp.replace(hour=17,minute=20)
             b=Bar(p.opened+timedelta(minutes=5),20000,20000.01,19999.99,20000)
             price,reason,closed=exit_price(p,b,c)
-            self.assertEqual(reason,'TAGESENDE')
+            self.assertEqual(reason,'END_OF_DAY')
             self.assertEqual(closed.time(),time(17,30))
 
     def test_diagnostic_selection_excludes_incomplete_day(self):
-        from historische_diagnose import select_days
+        from historical_diagnosis import select_days
         from decimal import Decimal
         def rows(day,step,count):
             start=datetime(2026,1,day,9,5,tzinfo=TZ)
@@ -954,7 +943,7 @@ class Tests(unittest.TestCase):
         self.assertEqual(len(selected),101)
         self.assertTrue(days[0]['used'])
         self.assertFalse(days[1]['used'])
-        self.assertIn('MINUTENABDECKUNG',days[1]['reason'])
+        self.assertIn('MINUTE_COVERAGE',days[1]['reason'])
 
     def test_kill_switch(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -984,7 +973,7 @@ def main():
         source = f'CSV (origin/authenticity not verified): {args.csv.resolve()}' if args.csv else 'SYNTHETIC TEST DATA — NOT REAL DAX PRICES'
         run = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S_%fZ')
         report = simulate(bars,c,args.out/run,source,Path('STOP'))
-        return 0 if report['status']=='ABGESCHLOSSEN' else 130
+        return 0 if report['status']=='COMPLETED' else 130
     except (ValueError, OSError, KeyError, sqlite3.Error) as exc:
         print(f'Aborted: {exc}', file=sys.stderr)
         return 1

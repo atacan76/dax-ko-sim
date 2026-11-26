@@ -77,10 +77,10 @@ def select_days(five, one):
                              min(p[2] for p in children),children[-1][3])!=values:
                 mismatches.append(stamp.isoformat())
         reasons=[]
-        if day.weekday()>=5:reasons.append('WOCHENENDE')
+        if day.weekday()>=5:reasons.append('WEEKEND')
         if actual!=expected_five:reasons.append('5MIN_RASTER_UNVOLLSTAENDIG_ODER_ABWEICHEND')
-        if missing_one:reasons.append('MINUTENABDECKUNG_UNVOLLSTAENDIG')
-        if mismatches:reasons.append('AGGREGATIONSABWEICHUNG')
+        if missing_one:reasons.append('MINUTE_COVERAGE_INCOMPLETE')
+        if mismatches:reasons.append('AGGREGATION_MISMATCH')
         use = not reasons
         if use:selected.extend(included)
         records.append(dict(day=str(day),used=use,reason='VERWENDET: Raster und Minutenaggregation bestätigt' if use else '; '.join(reasons),
@@ -89,7 +89,7 @@ def select_days(five, one):
                             missing_minute_labels=[t.isoformat() for t in missing_one],
                             aggregation_mismatches=mismatches,
                             excluded_source_rows=[dict(line=r[3],timestamp=r[0].isoformat(),
-                                reason='AUSSERHALB_DIAGNOSEFENSTER' if not start<=r[0]<end else 'TAG_NICHT_FREIGEGEBEN')
+                                reason='OUTSIDE_DIAGNOSTIC_WINDOW' if not start<=r[0]<end else 'DAY_NOT_APPROVED')
                                 for r in rows if not use or not start<=r[0]<end]))
     return selected,records
 
@@ -108,7 +108,7 @@ def prepare_probe(probe, out):
     selected,records = select_days(five,one)
     if not selected:raise ValueError('No day with confirmed diagnostic coverage.')
     out.mkdir(parents=True,exist_ok=False)
-    path = out/'ECHTE_INDEXDATEN_VERKUERZTE_DIAGNOSE_0905_1730.csv'
+    path = out/'REAL_INDEX_DATA_SHORTENED_DIAGNOSIS_0905_1730.csv'
     with path.open('x',encoding='utf-8',newline='') as f:
         writer=csv.writer(f);writer.writerow(CSV_FIELDS)
         for stamp,original_prices,values,line in selected:
@@ -127,8 +127,8 @@ def prepare_probe(probe, out):
                      original_file_hashes=manifest['files'],
                      converted_csv_sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
                      product_warning=PRODUCT_WARNING)
-    (out/'Tagesauswahl.json').write_text(json.dumps(selection,ensure_ascii=False,indent=2)+'\n')
-    with (out/'Tagesauswahl.csv').open('x',encoding='utf-8',newline='') as f:
+    (out/'day_selection.json').write_text(json.dumps(selection,ensure_ascii=False,indent=2)+'\n')
+    with (out/'day_selection.csv').open('x',encoding='utf-8',newline='') as f:
         fields=['day','used','reason','raw_5min_rows','selected_5min_rows','missing_minutes','run_label','model_warning']
         writer=csv.DictWriter(f,fieldnames=fields);writer.writeheader()
         for r in records:
@@ -139,16 +139,16 @@ def prepare_probe(probe, out):
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--probe',type=Path,default=DEFAULT_PROBE,help='Folder with the local FirstRate sample')
-    parser.add_argument('--out',type=Path,default=Path('historische_diagnose_ergebnisse'),help='Base folder for results')
+    parser.add_argument('--out',type=Path,default=Path('historical_diagnosis_results'),help='Base folder for results')
     args=parser.parse_args()
     try:
         run=args.out/datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S_%fZ')
         bars,selection,path=prepare_probe(args.probe,run)
-        report=simulate(bars,Config(),run/'Simulation',
+        report=simulate(bars,Config(),run/'simulation',
                         'REAL HISTORICAL INDEX DATA — FirstRate DAX user sample; exact index variant unconfirmed',
                         Path('STOP'),session=SESSION,selection=selection)
         print('Day selection and converted original prices:',run.resolve())
-        return 0 if report['status']=='ABGESCHLOSSEN' else 130
+        return 0 if report['status']=='COMPLETED' else 130
     except (ValueError,OSError,KeyError,csv.Error) as exc:
         print('Diagnosis aborted:',exc)
         return 1
