@@ -1,7 +1,7 @@
 __pycache__/
 *.pyc
 dax_ko_sim_results/
-historische_daten/
+historical_data/
 historical_diagnosis_results/
 STOP
 *.sqlite*

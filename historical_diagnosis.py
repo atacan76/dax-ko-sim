@@ -16,7 +16,7 @@ LABEL = 'REAL HISTORICAL INDEX DATA; artificial KO product prices; SHORTENED HIS
 SESSION = 'diagnose_0905'
 EASTERN = ZoneInfo('America/New_York')
 BERLIN = ZoneInfo('Europe/Berlin')
-DEFAULT_PROBE = Path(__file__).resolve().parent/'historische_daten'/'firstrate_dax_probe_20261020'
+DEFAULT_PROBE = Path(__file__).resolve().parent/'historical_data'/'firstrate_dax_probe_20261020'
 
 
 def load_provider(path):

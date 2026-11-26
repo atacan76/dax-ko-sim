@@ -96,12 +96,15 @@ FirstRate Data sample. That data is licensed and **not included**; without it
 the script will not run. It is kept here because the self-test covers its
 day-selection logic.
 
+By default it reads `historical_data/firstrate_dax_probe_20261020/` next to
+the script; use `--probe PATH` for another folder.
+
 ## Language
 
 Everything is in English: CLI help, terminal output, error messages, output
 file names, code comments and all status, reason and signal codes (for
 example `COMPLETED`, `TIME_LIMIT`, `COSTS_EXCEED_RISK_BUDGET`). Only the
-default input folder of the optional diagnosis mode (`historische_daten/`)
+manifest file name inside a FirstRate sample folder (`herkunft_und_pruefsummen.json`)
 keeps its original name.
 
 Exit reasons in `trades.csv`: `STOP`, `TARGET`, `TIME_LIMIT`, `END_OF_DAY`,
