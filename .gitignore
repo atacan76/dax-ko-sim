@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+dax_ko_sim_results/
+historische_daten/
+historische_diagnose_ergebnisse/
+STOP
+*.sqlite*
+*.db
+.env*
+.DS_Store
