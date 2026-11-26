@@ -1,41 +1,41 @@
 #!/usr/bin/env python3
-"""dax-ko-sim v0.6 — Variante C, ausschließlich Offline-Simulation.
+"""dax-ko-sim v0.6 — offline simulation only.
 
-Python >= 3.9, keine Zusatzpakete, keine Konten/Schlüssel, keine Netzwerkzugriffe.
-Start: python3 dax_ko_sim.py
-Tests: python3 dax_ko_sim.py --self-test
-Eigene Daten: python3 dax_ko_sim.py --csv dax.csv
-Kostenannahmen: python3 dax_ko_sim.py --fee 0.50 --spread 0.04
+Python >= 3.9, no extra packages, no accounts/keys, no network access.
+Run:         python3 dax_ko_sim.py
+Tests:       python3 dax_ko_sim.py --self-test
+Own data:    python3 dax_ko_sim.py --csv dax.csv
+Cost inputs: python3 dax_ko_sim.py --fee 0.50 --spread 0.04
 
 CSV (UTF-8): timestamp,open,high,low,close
-Zeitstempel ISO 8601 MIT UTC-Offset, z.B. 2026-10-19T09:00:00+02:00.
-Balkenzeit = Beginn des 5-Minuten-Balkens; letzter Balken 17:25.
-Nur vollständige Sitzungen 09:00–17:30 Europe/Berlin, Mo–Fr.
-Börsenfeiertage werden NICHT automatisch erkannt. CSV vorher bereinigen.
-Daten werden vollständig validiert, bevor eine Simulation startet.
+ISO 8601 timestamps WITH UTC offset, e.g. 2026-10-19T09:00:00+02:00.
+Bar time = start of the 5-minute bar; last bar starts 17:25.
+Only complete sessions 09:00-17:30 Europe/Berlin, Mon-Fri.
+Exchange holidays are NOT detected automatically. Clean the CSV first.
+All data is fully validated before a simulation starts.
 
-Modell: künstliche Long-/Short-KO-Produkte, feste Barriere bei Einstieg,
-Bezugsverhältnis 0.01, Hebel ungefähr 5, kein Emittent, keine echten ISINs.
-Produktwert = Abstand zur Barriere * Bezugsverhältnis, Bid/Ask +/- Spread/2.
-Keine realistische Produktbewertung: Finanzierung, Emittentenrisiko,
-wechselnde Spreads, Orderbuch, Teilausführungen und Latenz fehlen.
-KO wird auf Basis der Index-OHLC vorsichtig vor einem Stop abgewickelt.
-Stop/Target im selben Balken: Stop zuerst. Gaps können Risiko überschreiten.
+Model: artificial long/short KO products, barrier fixed at entry,
+ratio 0.01, leverage about 5, no issuer, no real ISINs.
+Product value = distance to barrier * ratio, bid/ask +/- spread/2.
+Not a realistic product valuation: financing, issuer risk, variable
+spreads, order book, partial fills and latency are missing.
+A knock-out is settled conservatively before a stop, based on index OHLC.
+Stop and target in the same bar: stop first. Gaps can exceed the risk.
 
-Signal: regelbasierte SMA-5/SMA-20-Trendstrategie, KEINE trainierte KI.
-Nur abgeschlossene vorherige Balken fließen ins Signal ein; Einstieg am
-nächsten Open. Zielarchitektur für KI: Signalvorschlag -> separate RiskGate.
-Kein Livefeed, keine Nachrichtenanalyse, kein Broker, kein Dauerbetrieb.
-Jeder Aufruf beginnt einen neuen Versuch mit 100 EUR (kein Resume).
-Demo-Ergebnisse sind KEIN Profitabilitätsnachweis und KEIN 30-Tage-Praxistest.
-Bei Standardkosten 1 EUR pro Order ist ein 2-EUR-Stopbudget inklusive
-Hin-/Rückkosten nicht praktikabel: konsequent keine Einstiege.
+Signal: rule-based SMA-5/SMA-20 trend strategy, NOT a trained AI.
+Only completed previous bars feed the signal; entry at the next open.
+Target architecture for AI: signal proposal -> separate RiskGate.
+No live feed, no news analysis, no broker, no continuous operation.
+Every run starts a fresh attempt with 100 EUR (no resume).
+Demo results are NOT proof of profitability.
+With default costs of 1 EUR per order, a 2 EUR stop budget including
+both fees is not workable: consistently no entries.
 
-Ausgaben je Lauf: Konfiguration, SQLite-Ereignisjournal, Trades.csv,
-Tagesberichte.csv, Bericht.json und Bericht.txt. Strg+C beendet den Lauf
-mit unvollständigem Status; offene Simulation wird nicht als geschlossen
-behauptet. Eine Datei STOP im aktuellen Verzeichnis sperrt neue Einstiege
-und schließt eine vorhandene Position zum nächsten simulierten Open.
+Outputs per run: configuration, SQLite event journal, Trades.csv,
+Tagesberichte.csv (daily reports), Bericht.json and Bericht.txt (report).
+Ctrl+C ends the run with status incomplete; an open simulated position
+is not claimed to be closed. A file named STOP in the current directory
+blocks new entries and closes an open position at the next simulated open.
 """
 from __future__ import annotations
 import argparse
@@ -59,8 +59,17 @@ TZ = ZoneInfo('Europe/Berlin')
 VERSION = '0.6'
 CSV_FIELDS = ['timestamp', 'open', 'high', 'low', 'close']
 PRICE_PATTERN = re.compile(r'[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?')
-PRODUCT_WARNING = ('Historische Indexkurse machen die künstlichen KO-Produktpreise '
-                   'nicht zu realistischen Derivatekursen.')
+PRODUCT_WARNING = ('Historical index prices do not turn the artificial KO product prices '
+                   'into realistic derivative prices.')
+# English labels for the terminal summary only; JSON, CSV and journal keep the codes.
+DISPLAY_CODES = {
+    'ABGESCHLOSSEN': 'COMPLETED', 'UNVOLLSTAENDIG': 'INCOMPLETE',
+    'KEIN_SIGNAL': 'NO_SIGNAL', 'NICHT_AUSGEWERTET': 'NOT_EVALUATED',
+    'TAGESLIMIT': 'DAILY_LOSS_LIMIT', 'TRADELIMIT': 'MAX_TRADES_PER_DAY',
+    'ZEITFENSTER': 'OUTSIDE_ENTRY_WINDOW', 'SPREAD': 'SPREAD_TOO_WIDE',
+    'KOSTEN_UEBER_RISIKOBUDGET': 'COSTS_EXCEED_RISK_BUDGET',
+    'KEINE_FINANZIERBARE_STUECKZAHL': 'NO_AFFORDABLE_QUANTITY',
+}
 STAMP_PATTERN = re.compile(
     r'\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?'
     r'(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)')
@@ -98,16 +107,16 @@ class Config:
     def validate(self):
         for key, value in asdict(self).items():
             if not math.isfinite(value) or value < 0:
-                raise ValueError(f'Ungültiger Parameter: {key}')
+                raise ValueError(f'Invalid parameter: {key}')
         if min(self.capital, self.risk, self.daily_loss, self.ratio,
                self.stop_fraction, self.max_minutes, self.max_trades) <= 0:
-            raise ValueError('Kapital, Limits und Zeit müssen positiv sein.')
+            raise ValueError('Capital, limits and time must be positive.')
         for key in ('capital', 'risk', 'daily_loss', 'fee'):
             value = Decimal(str(getattr(self, key)))
             if value != Decimal(cents(value))/100:
-                raise ValueError(f'{key} muss in ganzen Cent angegeben werden.')
+                raise ValueError(f'{key} must be given in whole cents.')
         if not 1 <= self.leverage <= 10 or self.stop_fraction >= 1/self.leverage:
-            raise ValueError('Ungültiger Hebel/Stop-Abstand.')
+            raise ValueError('Invalid leverage/stop distance.')
 
 @dataclass(frozen=True)
 class Bar:
@@ -210,37 +219,37 @@ def session_spec(session):
         return time(9), 102
     if session == 'diagnose_0905':
         return time(9,5), 101
-    raise ValueError('Unbekannter Sitzungsmodus: '+str(session))
+    raise ValueError('Unknown session mode: '+str(session))
 
 
 def validate_bars(bars, session='standard'):
     """Keine Reparatur, Sortierung, Deduplizierung oder Ergänzung von Daten."""
     session_start, bar_count = session_spec(session)
     if not bars:
-        raise ValueError('Keine Kursdaten.')
+        raise ValueError('No price data.')
     days = {}
     prev = None
     for number, b in enumerate(bars, 1):
         t = b.timestamp
         if t.tzinfo is None or t.utcoffset() is None:
-            raise ValueError(f'Balken {number}: Zeitstempel benötigt UTC-Offset.')
+            raise ValueError(f'Bar {number}: timestamp needs a UTC offset.')
         instant = t.astimezone(timezone.utc)
         local = instant.astimezone(TZ)
         # Auch direkte Python-Aufrufe dürfen RiskGate keine UTC-Wanduhr geben.
         if (t.replace(tzinfo=None) != local.replace(tzinfo=None)
                 or t.utcoffset() != local.utcoffset()):
-            raise ValueError(f'Balken {number}: Berliner Sitzungszeit erforderlich; '
-                             'CSV-Import konvertiert explizite Offsets automatisch.')
+            raise ValueError(f'Bar {number}: Berlin session time required; '
+                             'the CSV import converts explicit offsets automatically.')
         if prev is not None and instant <= prev:
-            raise ValueError(f'Balken {number}: Zeitstempel müssen eindeutig und aufsteigend sein.')
+            raise ValueError(f'Bar {number}: timestamps must be unique and ascending.')
         prev = instant
         vals = (b.open, b.high, b.low, b.close)
         if any(not math.isfinite(x) or x <= 0 for x in vals):
-            raise ValueError(f'Balken {number}: Kurse müssen endlich und positiv sein.')
+            raise ValueError(f'Bar {number}: prices must be finite and positive.')
         if b.low > min(b.open, b.close) or b.high < max(b.open, b.close):
-            raise ValueError(f'Balken {number}: Ungültige OHLC-Werte.')
+            raise ValueError(f'Bar {number}: invalid OHLC values.')
         if local.weekday() >= 5:
-            raise ValueError(f'Balken {number}: Wochenenddaten sind nicht zugelassen.')
+            raise ValueError(f'Bar {number}: weekend data is not allowed.')
         days.setdefault(local.date(), []).append(local)
     for day, times in days.items():
         start = datetime.combine(day, session_start, TZ)
@@ -250,8 +259,8 @@ def validate_bars(bars, session='standard'):
         missing = [t.isoformat() for t in expected if t not in actual]
         extra = [t.isoformat() for t in times if t not in expected_set]
         if times != expected:
-            raise ValueError(f'{day}: vollständige 5-Minuten-Daten {session_start:%H:%M}–17:25 erforderlich; '
-                             f'fehlend: {missing[:3]}, außerhalb Raster/Sitzung: {extra[:3]}.')
+            raise ValueError(f'{day}: complete 5-minute data {session_start:%H:%M}-17:25 required; '
+                             f'missing: {missing[:3]}, outside grid/session: {extra[:3]}.')
 
 
 def read_csv(path, session='standard'):
@@ -262,25 +271,25 @@ def read_csv(path, session='standard'):
         try:
             header = next(reader, None)
             if header != CSV_FIELDS:
-                raise ValueError('CSV-Kopf muss exakt timestamp,open,high,low,close sein.')
+                raise ValueError('CSV header must be exactly timestamp,open,high,low,close.')
             for row in reader:
                 line = reader.line_num
                 if len(row) != len(CSV_FIELDS) or any(not cell.strip() for cell in row):
-                    raise ValueError(f'CSV-Zeile {line}: genau fünf nichtleere Felder erforderlich.')
+                    raise ValueError(f'CSV line {line}: exactly five non-empty fields required.')
                 try:
                     if not STAMP_PATTERN.fullmatch(row[0]):
-                        raise ValueError('ISO-Zeitstempel mit T, Sekunden und UTC-Offset erforderlich.')
+                        raise ValueError('ISO timestamp with T, seconds and UTC offset required.')
                     stamp = datetime.fromisoformat(row[0].replace('Z', '+00:00'))
                     if stamp.tzinfo is None or stamp.utcoffset() is None:
-                        raise ValueError('Zeitstempel ohne UTC-Offset.')
+                        raise ValueError('Timestamp without UTC offset.')
                     if any(not PRICE_PATTERN.fullmatch(v.strip()) for v in row[1:]):
-                        raise ValueError('Kurse müssen Dezimalzahlen mit Punkt sein.')
+                        raise ValueError('Prices must be decimal numbers with a dot.')
                     # Der Offset definiert den Zeitpunkt; keine lokale Zeitzone erraten.
                     bars.append(Bar(stamp.astimezone(TZ), *(float(v) for v in row[1:])))
                 except (ValueError, OverflowError) as exc:
-                    raise ValueError(f'CSV-Zeile {line}: {exc}') from exc
+                    raise ValueError(f'CSV line {line}: {exc}') from exc
         except csv.Error as exc:
-            raise ValueError(f'CSV-Zeile {reader.line_num}: ungültiges CSV: {exc}') from exc
+            raise ValueError(f'CSV line {reader.line_num}: invalid CSV: {exc}') from exc
     validate_bars(bars, session)
     return bars
 
@@ -311,8 +320,8 @@ def simulate(bars, c, out, source, stop_file, session='standard', selection=None
     c.validate()
     validate_bars(bars, session)
     session_start, bar_count = session_spec(session)
-    run_label = (('VERKÜRZTER HISTORISCHER DIAGNOSETEST 09:05–17:30' if session == 'diagnose_0905'
-                  else 'STANDARD-OFFLINE-SIMULATION')+'; '+source+'; künstliche KO-Produktpreise')
+    run_label = (('SHORTENED HISTORICAL DIAGNOSTIC TEST 09:05-17:30' if session == 'diagnose_0905'
+                  else 'STANDARD OFFLINE SIMULATION')+'; '+source+'; artificial KO product prices')
     out.mkdir(parents=True, exist_ok=False)
     config_payload = dict(asdict(c), run_label=run_label, session=session)
     (out/'Konfiguration.json').write_text(json.dumps(config_payload, indent=2, ensure_ascii=False), encoding='utf-8')
@@ -337,7 +346,7 @@ def simulate(bars, c, out, source, stop_file, session='standard', selection=None
             last_time = b.timestamp
             if b.timestamp.date() != day:
                 if position:
-                    raise RuntimeError('Übernachtposition: Sitzung unvollständig.')
+                    raise RuntimeError('Overnight position: session incomplete.')
                 if day is not None:
                     daily.append(dict(day=str(day), start=euros(start_cash), end=euros(cash),
                                       net=euros(cash-start_cash), trades=count))
@@ -414,8 +423,8 @@ def simulate(bars, c, out, source, stop_file, session='standard', selection=None
                   day_selection=selection, paper_trading_days_counted=0,
                   status='UNVOLLSTAENDIG' if interrupted else 'ABGESCHLOSSEN',
                   real_orders_possible=False, artificial_products=True,
-                  data_validation='Vollständige Balken je enthaltenem Tag geprüft; '
-                  'keine Prüfung vollständig fehlender Handelstage oder der Datenherkunft.',
+                  data_validation='Complete bars checked for every included day; '
+                  'no check for entirely missing trading days or data origin.',
                   start_capital=c.capital, cash_balance=euros(cash),
                   final_equity=euros(cash) if not position else None,
                   net_pnl=euros(cash-cents(c.capital)) if not position else None,
@@ -423,36 +432,38 @@ def simulate(bars, c, out, source, stop_file, session='standard', selection=None
                   average_win=average(wins),
                   average_loss=average(losses),
                   net_expectancy=average([cents(t['net']) for t in trades]),
-                  money_rounding='EUR-Cent; ROUND_HALF_UP je Gesamtausführung; Kurse ungerundet',
+                  money_rounding='EUR cents; ROUND_HALF_UP per total fill; prices unrounded',
                   fees=euros(paid_fees),
                   max_drawdown_eur_at_bar_closes=euros(drawdown),
                   rejected_signals=rejections,
                   open_position=asdict(position) if position else None,
-                  limitations=PRODUCT_WARNING+' Künstliche KO-Produkte, feste Kosten, keine echte KI/Livekurse. '
-                  'Drawdown nur an Balkenschlüssen; keine Aussage zu realer Profitabilität.')
+                  limitations=PRODUCT_WARNING+' Artificial KO products, fixed costs, no real AI/live prices. '
+                  'Drawdown at bar closes only; no statement about real profitability.')
     (out/'Bericht.json').write_text(json.dumps(report, indent=2, ensure_ascii=False, default=str), encoding='utf-8')
     trade_fields = ['opened','closed','side','quantity','ask','bid','fees','net','reason','planned_risk','model_warning','run_label']
     if not trades and session == 'diagnose_0905':
         # Auch eine leere Trade-Tabelle trägt die Kennzeichnung, ohne Scheindatensatz.
-        trade_fields.append('Berichtskennzeichnung: '+run_label)
+        trade_fields.append('Report label: '+run_label)
     write_csv(out/'Trades.csv', [dict(t, model_warning=PRODUCT_WARNING, run_label=run_label) for t in trades],
               trade_fields)
     write_csv(out/'Tagesberichte.csv', [dict(d, model_warning=PRODUCT_WARNING, run_label=run_label) for d in daily],
               ['day','start','end','net','trades','model_warning','run_label'])
     write_csv(out/'Signale.csv', [dict(row, run_label=run_label, model_warning=PRODUCT_WARNING) for row in signals],
               ['timestamp','history_bars','side','reason','run_label','model_warning'])
-    summary = ('#dax-ko-sim — ausschließlich Simulation\n'
-               f"Kennzeichnung: {run_label}\nSignale: {signal_counts}\n"
-               f"Daten: {source}\nStatus: {report['status']}\n"
-               f"Start: {c.capital:.2f} EUR | Endkapital: {report['final_equity']}\n"
-               f"Bargeld: {report['cash_balance']:.2f} EUR | Gebühren bezahlt: {report['fees']:.2f} EUR\n"
-               f"Offene Position: {position is not None}\n"
-               f"Trades: {len(trades)} | Netto: {report['net_pnl']} EUR\n"
-               f"Ablehnungen: {rejections}\nDatenprüfung: {report['data_validation']}\n"
+    def shown(counts):
+        return {DISPLAY_CODES.get(k, k): v for k, v in counts.items()}
+    summary = ('#dax-ko-sim — simulation only\n'
+               f"Label: {run_label}\nSignals: {shown(signal_counts)}\n"
+               f"Data: {source}\nStatus: {DISPLAY_CODES.get(report['status'], report['status'])}\n"
+               f"Start: {c.capital:.2f} EUR | Final equity: {report['final_equity']}\n"
+               f"Cash: {report['cash_balance']:.2f} EUR | Fees paid: {report['fees']:.2f} EUR\n"
+               f"Open position: {position is not None}\n"
+               f"Trades: {len(trades)} | Net: {report['net_pnl']} EUR\n"
+               f"Rejections: {shown(rejections)}\nData check: {report['data_validation']}\n"
                f"{report['limitations']}\n")
     (out/'Bericht.txt').write_text(summary, encoding='utf-8')
     print(summary)
-    print(f'Berichte: {out.resolve()}')
+    print(f'Reports: {out.resolve()}')
     return report
 
 class Tests(unittest.TestCase):
@@ -901,7 +912,7 @@ class Tests(unittest.TestCase):
             with (root/'run'/'Trades.csv').open() as f:
                 empty=list(csv.reader(f))
             self.assertEqual(len(empty),1)
-            self.assertIn('VERKÜRZTER HISTORISCHER DIAGNOSETEST',empty[0][-1])
+            self.assertIn('SHORTENED HISTORICAL DIAGNOSTIC TEST',empty[0][-1])
             self.assertEqual(r['warmup_rows'],40)
 
     def test_diagnostic_position_closes_without_overnight(self):
@@ -955,13 +966,13 @@ class Tests(unittest.TestCase):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument('--capital', type=float, default=100.0, help='Startkapital dieses neuen Simulationslaufs (EUR)')
-    parser.add_argument('--csv', type=Path, help='Vollständige 5-Minuten-Kursdaten')
-    parser.add_argument('--fee', type=float, default=1.0, help='Gebühr pro Ausführung, Annahme (EUR)')
-    parser.add_argument('--spread', type=float, default=0.04, help='Produktspread, Annahme (EUR)')
-    parser.add_argument('--slippage', type=float, default=0.01)
-    parser.add_argument('--out', type=Path, default=Path('dax_ko_sim_results'))
-    parser.add_argument('--self-test', action='store_true')
+    parser.add_argument('--capital', type=float, default=100.0, help='Starting capital of this new simulation run (EUR)')
+    parser.add_argument('--csv', type=Path, help='CSV file with complete 5-minute price data')
+    parser.add_argument('--fee', type=float, default=1.0, help='Fee per fill, assumption (EUR)')
+    parser.add_argument('--spread', type=float, default=0.04, help='Product spread, assumption (EUR)')
+    parser.add_argument('--slippage', type=float, default=0.01, help='Slippage per unit and fill, assumption (EUR)')
+    parser.add_argument('--out', type=Path, default=Path('dax_ko_sim_results'), help='Base folder for run results')
+    parser.add_argument('--self-test', action='store_true', help='Run the built-in test suite')
     args = parser.parse_args()
     if args.self_test:
         result = unittest.TextTestRunner(verbosity=2).run(unittest.defaultTestLoader.loadTestsFromTestCase(Tests))
@@ -970,12 +981,12 @@ def main():
         c = Config(capital=args.capital,fee=args.fee,spread=args.spread,slippage=args.slippage)
         c.validate()
         bars = read_csv(args.csv) if args.csv else demo()
-        source = f'CSV (Herkunft/Echtheit nicht verifiziert): {args.csv.resolve()}' if args.csv else 'SYNTHETISCHE TESTDATEN — KEINE ECHTEN DAX-KURSE'
+        source = f'CSV (origin/authenticity not verified): {args.csv.resolve()}' if args.csv else 'SYNTHETIC TEST DATA — NOT REAL DAX PRICES'
         run = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S_%fZ')
         report = simulate(bars,c,args.out/run,source,Path('STOP'))
         return 0 if report['status']=='ABGESCHLOSSEN' else 130
     except (ValueError, OSError, KeyError, sqlite3.Error) as exc:
-        print(f'Abbruch: {exc}', file=sys.stderr)
+        print(f'Aborted: {exc}', file=sys.stderr)
         return 1
 
 if __name__ == '__main__':

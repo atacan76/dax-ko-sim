@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verkürzter historischer Diagnosetest mit lokalen FirstRate-Dateien, ohne Netzwerk."""
+"""Shortened historical diagnostic test using local FirstRate files, no network."""
 import argparse
 import csv
 import hashlib
@@ -12,7 +12,7 @@ from zoneinfo import ZoneInfo
 
 from dax_ko_sim import Config, CSV_FIELDS, PRODUCT_WARNING, read_csv, simulate
 
-LABEL = 'ECHTE HISTORISCHE INDEXDATEN; künstliche KO-Produktpreise; VERKÜRZTER HISTORISCHER DIAGNOSETEST 09:05–17:30'
+LABEL = 'REAL HISTORICAL INDEX DATA; artificial KO product prices; SHORTENED HISTORICAL DIAGNOSTIC TEST 09:05-17:30'
 SESSION = 'diagnose_0905'
 EASTERN = ZoneInfo('America/New_York')
 BERLIN = ZoneInfo('Europe/Berlin')
@@ -99,14 +99,14 @@ def prepare_probe(probe, out):
     for item in manifest['files']:
         path = probe/'original'/item['relative_path']
         if hashlib.sha256(path.read_bytes()).hexdigest()!=item['sha256']:
-            raise ValueError('Original-Prüfsumme geändert: '+str(path))
+            raise ValueError('Original checksum changed: '+str(path))
     docs = (probe/'original'/'_readme_documentation.txt').read_text()
     if not all(word in docs for word in ('DAX Index','US Eastern Time','Timestamps run from the start')):
-        raise ValueError('Instrument/Zeitzone/Balkenanfang nicht durch die vorhandene Dokumentation bestätigt.')
+        raise ValueError('Instrument/time zone/bar start not confirmed by the available documentation.')
     five = load_provider(probe/'original'/'DAX_5min_sample.csv')
     one = load_provider(probe/'original'/'DAX_1min_sample.csv')
     selected,records = select_days(five,one)
-    if not selected:raise ValueError('Kein Tag mit bestätigter Diagnoseabdeckung.')
+    if not selected:raise ValueError('No day with confirmed diagnostic coverage.')
     out.mkdir(parents=True,exist_ok=False)
     path = out/'ECHTE_INDEXDATEN_VERKUERZTE_DIAGNOSE_0905_1730.csv'
     with path.open('x',encoding='utf-8',newline='') as f:
@@ -138,19 +138,19 @@ def prepare_probe(probe, out):
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--probe',type=Path,default=DEFAULT_PROBE)
-    parser.add_argument('--out',type=Path,default=Path('historische_diagnose_ergebnisse'))
+    parser.add_argument('--probe',type=Path,default=DEFAULT_PROBE,help='Folder with the local FirstRate sample')
+    parser.add_argument('--out',type=Path,default=Path('historische_diagnose_ergebnisse'),help='Base folder for results')
     args=parser.parse_args()
     try:
         run=args.out/datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S_%fZ')
         bars,selection,path=prepare_probe(args.probe,run)
         report=simulate(bars,Config(),run/'Simulation',
-                        'ECHTE HISTORISCHE INDEXDATEN — FirstRate-DAX-Nutzerprobe; genaue Indexvariante unbestätigt',
+                        'REAL HISTORICAL INDEX DATA — FirstRate DAX user sample; exact index variant unconfirmed',
                         Path('STOP'),session=SESSION,selection=selection)
-        print('Tagesauswahl und konvertierte Originalpreise:',run.resolve())
+        print('Day selection and converted original prices:',run.resolve())
         return 0 if report['status']=='ABGESCHLOSSEN' else 130
     except (ValueError,OSError,KeyError,csv.Error) as exc:
-        print('Diagnose abgebrochen:',exc)
+        print('Diagnosis aborted:',exc)
         return 1
 
 

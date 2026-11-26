@@ -97,7 +97,11 @@ day-selection logic.
 
 ## Language
 
-Code comments, CLI output and report fields are currently in German.
+The CLI help, terminal output and error messages are in English. Status and
+reason codes inside `Bericht.json`, the CSV files and the journal are still
+German identifiers (for example `ABGESCHLOSSEN`, `ZEITLIMIT`); the terminal
+summary shows English labels for them (`COMPLETED`, `MAX_TRADES_PER_DAY`, …).
+Output file names and most code comments are also still German.
 Translations and pull requests are welcome.
 
 ## License
